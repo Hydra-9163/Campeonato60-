@@ -44,7 +44,12 @@ app.get('/api/state', async (_req, res) => {
       'SELECT state, updated_at FROM campeonato_state WHERE id = 1'
     );
     if (!result.rowCount) return res.json({ state: null });
-    res.json({ state: result.rows[0].state, updatedAt: result.rows[0].updated_at });
+    const updatedAt = result.rows[0].updated_at;
+    const since = req.query.since ? new Date(req.query.since).getTime() : NaN;
+    if (Number.isFinite(since) && since === new Date(updatedAt).getTime()) {
+      return res.status(304).end();
+    }
+    res.json({ state: result.rows[0].state, updatedAt });
   } catch (error) {
     console.error('Erro ao carregar estado:', error);
     res.status(500).json({ error: 'Não foi possível carregar os dados.' });
@@ -65,14 +70,15 @@ app.put('/api/state', async (req, res) => {
   }
 
   try {
-    await pool.query(
+    const result = await pool.query(
       `INSERT INTO campeonato_state (id, state, updated_at)
        VALUES (1, $1::jsonb, NOW())
        ON CONFLICT (id)
-       DO UPDATE SET state = EXCLUDED.state, updated_at = NOW()`,
+       DO UPDATE SET state = EXCLUDED.state, updated_at = NOW()
+       RETURNING updated_at`,
       [JSON.stringify(state)]
     );
-    res.json({ ok: true });
+    res.json({ ok: true, updatedAt: result.rows[0].updated_at });
   } catch (error) {
     console.error('Erro ao salvar estado:', error);
     res.status(500).json({ error: 'Não foi possível salvar os dados.' });

@@ -8,6 +8,10 @@ const API_STATE_URL = '/api/state';
 let apiReady = false;
 let saveQueue = Promise.resolve();
 let apiErrorShown = false;
+let lastServerUpdatedAt = null;
+let pendingWrites = 0;
+let syncInFlight = false;
+let syncTimer = null;
 const DEFAULT_PASS = 'hydra6767';
 
 const HOME_PHOTOS = [
@@ -56,6 +60,7 @@ function saveLocal() {
   if (!apiReady) return;
 
   const body = JSON.stringify(snapshot);
+  pendingWrites++;
   saveQueue = saveQueue
     .catch(() => {})
     .then(async () => {
@@ -65,6 +70,8 @@ function saveLocal() {
         body
       });
       if (!response.ok) throw new Error(`Falha ao salvar no servidor (${response.status})`);
+      const result = await response.json().catch(() => ({}));
+      if (result.updatedAt) lastServerUpdatedAt = result.updatedAt;
       apiErrorShown = false;
     })
     .catch(error => {
@@ -73,7 +80,8 @@ function saveLocal() {
         apiErrorShown = true;
         toast('Falha ao sincronizar com o banco. Verifique a conexão.');
       }
-    });
+    })
+    .finally(() => { pendingWrites = Math.max(0, pendingWrites - 1); });
 }
 const DEF = {
   nome: 'Boca do Rio', data: '3 de dezembro de 2026', local: '',
@@ -338,7 +346,7 @@ const V = {
             <button class="bt" data-tab="${nextTab}">${toggleLabel}</button>
             <button class="pill sm" data-a="logout">SAIR</button>
           </div>
-          <section class="hero compact"><img class="hydra-logo" src="HYDRA LOGO.png" alt="Logo Hydra FRC"><h1>CAMPEONATO 60+</h1></section>
+          <section class="hero compact"><img class="hydra-logo" src="imgs/HYDRA LOGO.png" alt="Logo Hydra FRC"><h1>CAMPEONATO 60+</h1></section>
           ${rt(rank(), true)}
         </div>`);
       }
@@ -489,7 +497,7 @@ const P = {
         <input id="uPass" type="text" placeholder="Senha">
         <button class="bt" data-a="addUser">Salvar usuário</button>
       </div>
-      <p class="mu" style="margin:8px 0 0;font-size:12px">A senha <b>1234</b> vale apenas para Árbitro Chefe enquanto não houver um usuário de Árbitro Chefe cadastrado. Juízes e árbitros criados aqui já aparecem automaticamente nas tabelas e no cronograma.</p>
+      <p class="mu" style="margin:8px 0 0;font-size:12px">A senha <b>padrão</b> vale apenas para Árbitro Chefe enquanto não houver um usuário de Árbitro Chefe cadastrado. Juízes e árbitros criados aqui já aparecem automaticamente nas tabelas e no cronograma.</p>
     </div>
     <div class="cd">
       <h3>Usuários cadastrados</h3>
@@ -622,7 +630,7 @@ const H = {
         return toast('Para esta função, informe usuário e senha cadastrados');
       }
       if (hasChiefUser()) {
-        return toast('A senha 1234 foi desativada. Informe o usuário e senha do Árbitro Chefe');
+        return toast('A senha padrão foi desativada. Informe o usuário e senha do Árbitro Chefe');
       }
       if (p !== DEFAULT_PASS) {
         return toast('Senha incorreta');
@@ -910,6 +918,45 @@ document.addEventListener('input', e => {
   }
 });
 
+function normalizeServerState(saved) {
+  return {
+    teams: Array.isArray(saved.teams) ? saved.teams : [],
+    matches: Array.isArray(saved.matches) ? saved.matches : [],
+    insp: Array.isArray(saved.insp) ? saved.insp : [],
+    judge: Array.isArray(saved.judge) ? saved.judge : [],
+    cfg: saved.cfg && typeof saved.cfg === 'object' ? saved.cfg : {},
+    aw: saved.aw && typeof saved.aw === 'object' ? saved.aw : {},
+    users: Array.isArray(saved.users) ? saved.users : []
+  };
+}
+
+async function syncFromServer() {
+  // Não substitui alterações locais ainda não enviadas nem interrompe formulários em edição.
+  if (!apiReady || pendingWrites > 0 || syncInFlight || document.visibilityState === 'hidden') return;
+  const active = document.activeElement;
+  if (active?.closest?.('.frm') || active?.matches?.('[data-f]')) return;
+
+  syncInFlight = true;
+  try {
+    const response = await fetch(`${API_STATE_URL}?since=${encodeURIComponent(lastServerUpdatedAt || '')}`, {
+      cache: 'no-store'
+    });
+    if (response.status === 304) return; // Nenhuma alteração desde a última consulta.
+    if (!response.ok) throw new Error(`Falha ao atualizar dados (${response.status})`);
+    const result = await response.json();
+    if (!result.state || !result.updatedAt || result.updatedAt === lastServerUpdatedAt) return;
+
+    S = normalizeServerState(result.state);
+    lastServerUpdatedAt = result.updatedAt;
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(S)); } catch (_) {}
+    render(true);
+  } catch (error) {
+    console.error('Não foi possível atualizar os dados do servidor:', error);
+  } finally {
+    syncInFlight = false;
+  }
+}
+
 async function startApp() {
   try {
     const response = await fetch(API_STATE_URL);
@@ -917,16 +964,8 @@ async function startApp() {
     const result = await response.json();
 
     if (result.state && typeof result.state === 'object') {
-      const saved = result.state;
-      S = {
-        teams: Array.isArray(saved.teams) ? saved.teams : [],
-        matches: Array.isArray(saved.matches) ? saved.matches : [],
-        insp: Array.isArray(saved.insp) ? saved.insp : [],
-        judge: Array.isArray(saved.judge) ? saved.judge : [],
-        cfg: saved.cfg && typeof saved.cfg === 'object' ? saved.cfg : {},
-        aw: saved.aw && typeof saved.aw === 'object' ? saved.aw : {},
-        users: Array.isArray(saved.users) ? saved.users : []
-      };
+      S = normalizeServerState(result.state);
+      lastServerUpdatedAt = result.updatedAt || null;
       try { localStorage.setItem(STORAGE_KEY, JSON.stringify(S)); } catch (_) {}
     } else {
       // Primeira execução: importa os dados locais existentes para o banco.
@@ -941,6 +980,7 @@ async function startApp() {
     toast('Banco indisponível. O site está usando os dados locais deste navegador.');
   }
   render(true);
+  if (!syncTimer) syncTimer = setInterval(syncFromServer, 2000);
 }
 
 startApp();
