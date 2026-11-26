@@ -38,8 +38,9 @@ app.get('/api/health', async (_req, res) => {
   }
 });
 
-app.get('/api/state', async (_req, res) => {
+app.get('/api/state', async (req, res) => {
   try {
+    res.set('Cache-Control', 'no-store');
     const result = await pool.query(
       'SELECT state, updated_at FROM campeonato_state WHERE id = 1'
     );
