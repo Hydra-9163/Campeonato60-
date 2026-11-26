@@ -8,11 +8,8 @@ const API_STATE_URL = '/api/state';
 let apiReady = false;
 let saveQueue = Promise.resolve();
 let apiErrorShown = false;
-let lastServerUpdatedAt = null;
-let pendingWrites = 0;
-let syncInFlight = false;
-let syncTimer = null;
-const DEFAULT_PASS = 'hydra6767';
+let authToken = '';
+let editingUser = null;
 
 const HOME_PHOTOS = [
   'imgs/img1.png', 'imgs/img2.png', 'imgs/img3.png', 'imgs/img4.png',
@@ -49,7 +46,7 @@ let T = null, left = 240, jt = null;
 function saveLocal() {
   const snapshot = {
     teams: S.teams, matches: S.matches, insp: S.insp,
-    judge: S.judge, cfg: S.cfg, aw: S.aw, users: S.users
+    judge: S.judge, cfg: S.cfg, aw: S.aw, users: (S.users || []).map(({ user, role }) => ({ user, role }))
   };
 
   // Mantém uma cópia local como contingência, mas o Railway é a fonte principal.
@@ -60,18 +57,22 @@ function saveLocal() {
   if (!apiReady) return;
 
   const body = JSON.stringify(snapshot);
-  pendingWrites++;
   saveQueue = saveQueue
     .catch(() => {})
     .then(async () => {
       const response = await fetch(API_STATE_URL, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}) },
         body
       });
+      if (response.status === 401) {
+        authToken = '';
+        role = '';
+        tab = '';
+        render(true);
+        throw new Error('Sessão expirada. Entre novamente para continuar.');
+      }
       if (!response.ok) throw new Error(`Falha ao salvar no servidor (${response.status})`);
-      const result = await response.json().catch(() => ({}));
-      if (result.updatedAt) lastServerUpdatedAt = result.updatedAt;
       apiErrorShown = false;
     })
     .catch(error => {
@@ -80,8 +81,7 @@ function saveLocal() {
         apiErrorShown = true;
         toast('Falha ao sincronizar com o banco. Verifique a conexão.');
       }
-    })
-    .finally(() => { pendingWrites = Math.max(0, pendingWrites - 1); });
+    });
 }
 const DEF = {
   nome: 'Boca do Rio', data: '3 de dezembro de 2026', local: '',
@@ -170,20 +170,15 @@ function teamSelect(attr, list, selectedVal) {
   </div>`;
 }
 
-const res = m => {
-  const rd = m.cr >= 2, bd = m.cb >= 2;
-  if (rd && !bd) return 'b';
-  if (bd && !rd) return 'r';
-  return m.rs > m.bs ? 'r' : m.bs > m.rs ? 'b' : 't';
-};
+const res = m => m.rs > m.bs ? 'r' : m.bs > m.rs ? 'b' : 't';
 const calc = l => {
-  let r = 0, b = 0, cr = 0, cb = 0;
+  let r = 0, b = 0;
   l.forEach(e => {
     const v = e[1] == 'p' ? 3 : e[1] == 'c' ? -3 : -12;
-    if (e[0] == 'r') { r += v; if (e[1] == 'i') cr++; }
-    else { b += v; if (e[1] == 'i') cb++; }
+    if (e[0] == 'r') r += v;
+    else b += v;
   });
-  return { rs: r, bs: b, cr, cb };
+  return { rs: r, bs: b, cr: 0, cb: 0 };
 };
 
 const hasChiefUser = () => (S.users || []).some(u => u.role === 'geral');
@@ -206,7 +201,7 @@ function renderTiles() {
 
 function rank() {
   const o = {};
-  pres().forEach(t => { o[t.n] = { n: t.n, name: t.name, j: 0, b: 0, pts: 0 }; });
+  S.teams.forEach(t => { o[t.n] = { n: t.n, name: t.name, j: 0, b: 0, pts: 0 }; });
   S.matches.filter(m => m.k == 'Q' && m.st == 'done').forEach(m => {
     const w = res(m);
     [['red', 'r'], ['blue', 'b']].forEach(([a, c]) => m[a].forEach(n => {
@@ -266,18 +261,18 @@ const ch = b => {
 };
 
 function warns() {
-  const c = cf(), a = pres().length, all = S.teams.length, w = [];
+  const c = cf(), all = S.teams.length, w = [];
   if (all > c.max) w.push(`Há ${all} equipes cadastradas, mas a capacidade do evento é ${c.max}.`);
-  if (a < 4) w.push(`Com ${a} equipe(s) presente(s) não dá para formar uma partida (cada partida precisa de 4 equipes).`);
+  if (all < 4) w.push(`Cadastre pelo menos 4 equipes para montar partidas (atualmente: ${all}).`);
   else {
-    if (a % 4) w.push(`${a} equipes presentes: as partidas não fecham de 4 em 4. A cada rodada, ${4 - a % 4} equipe(s) jogarão uma partida a mais para completar.`);
-    const M = Math.ceil(a / 4) * 4, fim = hm(c.ini) + (M - 1) * c.step + c.gap + c.step;
-    if (fim > hm(c.fim)) w.push(`O cronograma termina às ${fm(fim)}, depois do fim do evento (${c.fim}). Reduza o intervalo ou o número de equipes.`);
+    if (all % 4) w.push(`${all} equipes cadastradas: as partidas serão completadas em grupos de 4, e algumas equipes poderão jogar uma partida a mais.`);
+    const M = Math.ceil(all / 4) * 4, fim = hm(c.ini) + (M - 1) * c.step + c.gap + c.step;
+    if (fim > hm(c.fim)) w.push(`O cronograma estimado termina às ${fm(fim)}, depois do fim do evento (${c.fim}). Reduza o intervalo ou o número de equipes.`);
   }
-  if (S.matches.some(m => [...m.red, ...m.blue].some(n => !tm(n)?.present))) w.push('O cronograma tem equipes ausentes ou removidas. Gere o cronograma de novo.');
+  if (S.matches.some(m => [...m.red, ...m.blue].some(n => !tm(n)))) w.push('Há partidas com equipes removidas do cadastro. Revise os confrontos.');
   const dup = S.matches.filter(m => new Set([...m.red, ...m.blue]).size < 4);
   if (dup.length) w.push('Partidas com equipe repetida: ' + dup.map(m => m.k + m.n).join(', ') + '.');
-  const q = pres().filter(t => S.matches.filter(m => m.k == 'Q' && [...m.red, ...m.blue].includes(t.n)).length < 3);
+  const q = S.teams.filter(t => S.matches.filter(m => m.k == 'Q' && [...m.red, ...m.blue].includes(t.n)).length < 3);
   if (S.matches.length && q.length) w.push('Equipes com menos de 3 partidas de qualificação: ' + q.map(t => t.n).join(', ') + '.');
   return w;
 }
@@ -303,7 +298,7 @@ function loginScreen() {
       </label>
       <div class="row" style="justify-content:space-between;margin-top:12px">
         <button class="bt" data-a="doLogin">Entrar</button>
-        <span class="mu" style="font-size:12px">${chiefHasCustom ? 'Use as credenciais cadastradas' : 'Para mais informações, contate o administrador'}</span>
+        <span class="mu" style="font-size:12px">${chiefHasCustom ? 'Use as credenciais cadastradas' : 'Acesso inicial do Árbitro Chefe: usuário em branco e senha definida pela organização'}</span>
       </div>
     </div>
   </div>`;
@@ -346,7 +341,7 @@ const V = {
             <button class="bt" data-tab="${nextTab}">${toggleLabel}</button>
             <button class="pill sm" data-a="logout">SAIR</button>
           </div>
-          <section class="hero compact"><img class="hydra-logo" src="imgs/HYDRA LOGO.png" alt="Logo Hydra FRC"><h1>CAMPEONATO 60+</h1></section>
+          <section class="hero compact"><img class="hydra-logo" src="HYDRA LOGO.png" alt="Logo Hydra FRC"><h1>CAMPEONATO 60+</h1></section>
           ${rt(rank(), true)}
         </div>`);
       }
@@ -383,7 +378,12 @@ const mesa = k => {
   const live = m.st == 'live';
   const durMin = +(m.durMin ?? 4) || 4;
   const durSec = getMatchDurSec(m);
-  const side = (c, l) => `<div class="cd"><h3>${l}</h3>${m[c == 'r' ? 'red' : 'blue'].map(n => `<div><b>${esc(n)}</b> · ${esc(tm(n)?.name)}</div>`).join('')}<div class="big">${m[c + 's']}</div><div class="mu" style="text-align:center">Bolinhas: ${m.log.filter(e => e == c + 'p').length} · Cartões: ${m['c' + c]}${m['c' + c] >= 2 ? ' · DESCLASSIFICADA' : ''}</div><button class="bt w" data-e="${c}p" ${live ? '' : 'disabled'}>+3 Marcou ponto</button><button class="bt gr w" data-e="${c}c" ${live ? '' : 'disabled'}>−3 Colisão (causador)</button><button class="bt gr w" data-e="${c}i" ${live ? '' : 'disabled'}>−12 Imobilização + cartão amarelo</button></div>`;
+  const side = (c, l) => {
+    const teamNumbers = m[c == 'r' ? 'red' : 'blue'];
+    const cards = m.yellowCards || {};
+    const teamRows = teamNumbers.map(n => `<div class="penalty-team"><div><b>${esc(n)} · ${esc(tm(n)?.name || 'Equipe')}</b><small>Cartões amarelos nesta partida: ${cards[n] || 0}</small></div><div class="row"><button class="bt yellow" data-yellow="${esc(n)}" data-match="${mid(m)}" ${live ? '' : 'disabled'}>Aplicar cartão</button>${cards[n] ? `<button class="bt gr" data-yellow-remove="${esc(n)}" data-match="${mid(m)}" ${live ? '' : 'disabled'}>Desfazer</button>` : ''}</div></div>`).join('');
+    return `<div class="cd"><h3>${l}</h3>${teamRows}<div class="big">${m[c + 's']}</div><div class="mu" style="text-align:center">Bolinhas: ${m.log.filter(e => e == c + 'p').length}</div><button class="bt w" data-e="${c}p" ${live ? '' : 'disabled'}>+3 Marcou ponto</button><button class="bt gr w" data-e="${c}c" ${live ? '' : 'disabled'}>−3 Colisão (causador)</button><button class="bt gr w" data-e="${c}i" ${live ? '' : 'disabled'}>−12 Imobilização</button></div>`;
+  };
 
   const treinoDurCtrl = k === 'T'
     ? `<label class="row" style="gap:6px"><span>Duração da partida (min):</span><input type="number" min="0.5" max="60" step="0.5" style="width:76px" data-dur="${mid(m)}" value="${esc(durMin)}"></label>`
@@ -489,28 +489,11 @@ const P = {
   usuarios() {
     const roleOpts = Object.entries(RO).map(([k, v]) => [k, v[0]]);
     const list = S.users || [];
-    return `<div class="cd frm">
-      <h3>Criar usuário, função e senha</h3>
-      <div class="row">
-        <input id="uName" placeholder="Usuário / Nome">
-        <select id="uRole">${opts(roleOpts, 'juizDesign')}</select>
-        <input id="uPass" type="text" placeholder="Senha">
-        <button class="bt" data-a="addUser">Salvar usuário</button>
-      </div>
-      <p class="mu" style="margin:8px 0 0;font-size:12px">A senha <b>padrão</b> vale apenas para Árbitro Chefe enquanto não houver um usuário de Árbitro Chefe cadastrado. Juízes e árbitros criados aqui já aparecem automaticamente nas tabelas e no cronograma.</p>
-    </div>
-    <div class="cd">
-      <h3>Usuários cadastrados</h3>
-      <table>
-        <tr><th>Usuário</th><th>Função</th><th>Senha</th><th>Ação</th></tr>
-        ${list.map((u, idx) => `<tr>
-          <td>${esc(u.user)}</td>
-          <td>${esc(RO[u.role]?.[0] || u.role)}</td>
-          <td>${esc(u.pass)}</td>
-          <td><button class="bt gr" data-delu="${idx}">Remover</button></td>
-        </tr>`).join('') || '<tr><td colspan="4">Nenhum usuário cadastrado ainda.</td></tr>'}
-      </table>
-    </div>`;
+    const editing = editingUser ? list.find(u => u.user === editingUser.user && u.role === editingUser.role) : null;
+    const form = editing
+      ? `<div class="cd frm"><h3>Alterar senha de ${esc(editing.user)}</h3><p class="mu">A senha atual nunca é exibida e não é necessária para definir uma nova.</p><div class="row"><input id="uPass" type="password" autocomplete="new-password" placeholder="Digite a nova senha"><button class="bt" data-a="addUser">Salvar nova senha</button><button class="bt gr" data-a="cancelUserEdit">Cancelar</button></div></div>`
+      : `<div class="cd frm"><h3>Criar usuário</h3><div class="row"><input id="uName" placeholder="Usuário / Nome"><select id="uRole">${opts(roleOpts, 'juizDesign')}</select><input id="uPass" type="password" autocomplete="new-password" placeholder="Defina uma senha"><button class="bt" data-a="addUser">Criar usuário</button></div></div>`;
+    return `${form}<div class="cd"><h3>Usuários cadastrados</h3><div class="user-list">${list.map((u, idx) => `<div class="user-row"><div><b>${esc(u.user)}</b><small>${esc(RO[u.role]?.[0] || u.role)}</small></div><div class="row"><button class="bt gr" data-editu="${idx}">Alterar senha</button><button class="bt gr" data-delu="${idx}">Remover</button></div></div>`).join('') || '<p>Nenhum usuário cadastrado ainda.</p>'}</div></div>`;
   },
   mesaT: () => mesa('T'),
   mesaQ: () => mesa('Q'),
@@ -539,14 +522,14 @@ const P = {
     return `${wn()}<div class="cd frm"><h3>Dados do evento</h3><div class="g">${i('nome', 'Nome do evento')}${i('data', 'Data')}${i('local', 'Localização')}${i('max', 'Capacidade (nº de equipes)', 'number')}${i('ini', 'Início', 'time')}${i('fim', 'Fim', 'time')}${i('step', 'Intervalo entre partidas (min)', 'number')}${i('gap', 'Pausa entre treino e qualificação (min)', 'number')}</div><br><button class="bt" data-a="savecfg">Salvar</button></div>`;
   },
   equipesA() {
-    return `<div class="cd frm"><h3>Cadastrar equipe</h3><div class="row"><input id="tn" placeholder="Nº" size="5"><input id="tnm" placeholder="Nome da equipe"><input id="tu" placeholder="Unidade"><button class="bt" data-a="addteam">Adicionar</button><button class="bt gr" data-a="demo">Carregar 8 exemplos</button></div><p class="mu" style="margin:8px 0 0;font-size:12px">As equipes entram como não credenciadas; marque "Equipe presente" na aba Credenciamento para confirmar presença.</p></div>${wn()}<div class="cd"><table><tr><th>Nº<th>Equipe<th>Unidade<th>Credenciada<th>` +
+    return `<div class="cd frm"><h3>Cadastrar equipe</h3><div class="row"><input id="tn" placeholder="Nº" size="5"><input id="tnm" placeholder="Nome da equipe"><input id="tu" placeholder="Unidade"><button class="bt" data-a="addteam">Adicionar</button><button class="bt gr" data-a="demo">Carregar 8 exemplos</button></div><p class="mu" style="margin:8px 0 0;font-size:12px">O cadastro já permite incluir a equipe no cronograma. O credenciamento é independente e pode ser feito depois.</p></div>${wn()}<div class="cd"><table><tr><th>Nº<th>Equipe<th>Unidade<th>Credenciada<th>` +
       S.teams.sort((a, b) => a.n - b.n).map(t => `<tr><td>${esc(t.n)}<td>${esc(t.name)}<td>${esc(t.unit)}<td>${t.present ? '<span class="ok">Sim</span>' : '<span class="mu">Aguardando credenciamento</span>'}<td><button class="bt gr" data-del="${esc(t.n)}">Remover</button>`).join('') + '</table></div>';
   },
   cronograma() {
     const ms = [...S.matches].sort((a, b) => a.k < b.k ? 1 : a.k > b.k ? -1 : a.n - b.n);
     const ar = getRefArbiters();
-    const pt = pres().map(t => [t.n, t.n + ' · ' + t.name]);
-    const sl = (m, s, i) => `<td><select data-slot="${m.k}${pad(m.n)}|${s}|${i}">${opts([...pt, ...(pt.some(p => p[0] == m[s][i]) ? [] : [[m[s][i], m[s][i] + ' (ausente)']])], m[s][i])}</select>`;
+    const pt = S.teams.map(t => [t.n, t.n + ' · ' + t.name]);
+    const sl = (m, s, i) => `<td><select data-slot="${m.k}${pad(m.n)}|${s}|${i}">${opts([...pt, ...(pt.some(p => p[0] == m[s][i]) || !m[s][i] ? [] : [[m[s][i], m[s][i] + ' (não cadastrada)']])], m[s][i])}</select>`;
     const refSel = (m, idx) => {
       const curRef = Array.isArray(m.refs) ? (m.refs[idx] || '') : (idx === 0 ? (m.ref || '') : '');
       return `<td><select data-rf="${m.k}${pad(m.n)}|${idx}"><option value="">–</option>${opts(ar.map(x => [x, x]), curRef)}</select>`;
@@ -609,60 +592,94 @@ function removeMatch(docId) {
 }
 
 const H = {
-  doLogin() {
+  async doLogin() {
     const uName = ($('#lgUser')?.value || '').trim();
     const r = $('#lgRole')?.value || 'geral';
     const p = ($('#lgPass')?.value || '').trim();
-    const users = S.users || [];
-
-    const matchedByUser = uName
-      ? users.find(x => x.user.toLowerCase() === uName.toLowerCase() && x.role === r)
-      : null;
-
-    if (uName) {
-      if (!matchedByUser || matchedByUser.pass !== p) {
-        return toast('Usuário, função ou senha inválidos');
-      }
-      role = matchedByUser.role;
-      me = { id: 'u-' + matchedByUser.user, name: matchedByUser.user };
-    } else {
-      if (r !== 'geral') {
-        return toast('Para esta função, informe usuário e senha cadastrados');
-      }
-      if (hasChiefUser()) {
-        return toast('A senha padrão foi desativada. Informe o usuário e senha do Árbitro Chefe');
-      }
-      if (p !== DEFAULT_PASS) {
-        return toast('Senha incorreta');
-      }
-      role = 'geral';
-      me = { id: 'local-geral', name: RO.geral[0] };
+    if (!p) return toast('Informe a senha');
+    try {
+      const response = await fetch('/api/login', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user: uName, role: r, password: p })
+      });
+      const result = await response.json();
+      if (!response.ok) return toast(result.error || 'Usuário, função ou senha inválidos');
+      authToken = result.token;
+      role = result.role;
+      saveLocal();
+      me = { id: 'u-' + (result.user || 'local-geral'), name: result.user || RO.geral[0] };
+      tab = RO[role][1][0];
+      E = role === 'geral';
+      toast('Acesso liberado');
+      render(true);
+    } catch (error) {
+      console.error('Falha no login:', error);
+      toast('Não foi possível autenticar no servidor');
     }
-
-    tab = RO[role][1][0];
-    E = (role === 'geral');
-    toast('Acesso liberado');
-    render(true);
   },
   logout() {
+    if (authToken) fetch('/api/logout', { method: 'POST', headers: { Authorization: `Bearer ${authToken}` } }).catch(() => {});
+    authToken = '';
     role = '';
     tab = '';
     me = { id: 'local-staff', name: '' };
     clearInterval(T);
     render(true);
   },
-  addUser() {
-    const user = ($('#uName')?.value || '').trim();
-    const uRole = $('#uRole')?.value || 'juizDesign';
-    const pass = ($('#uPass')?.value || '').trim();
-    if (!user || !pass) return toast('Preencha usuário e senha');
-    S.users = S.users || [];
-    const idx = S.users.findIndex(x => x.user.toLowerCase() === user.toLowerCase() && x.role === uRole);
-    const rec = { user, role: uRole, pass };
-    if (idx >= 0) S.users[idx] = rec;
-    else S.users.push(rec);
+  async addUser() {
+    const editing = editingUser;
+    const user = editing ? editing.user : ($('#uName')?.value || '').trim();
+    const uRole = editing ? editing.role : ($('#uRole')?.value || 'juizDesign');
+    const password = ($('#uPass')?.value || '').trim();
+    if (!user || !password) return toast(editing ? 'Informe a nova senha' : 'Preencha usuário e senha');
+    try {
+      const response = await fetch('/api/users', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+        body: JSON.stringify({ action: editing ? 'password' : 'create', user, role: uRole, password })
+      });
+      const result = await response.json();
+      if (!response.ok) return toast(result.error || 'Não foi possível salvar o usuário');
+      S.users = result.users || S.users;
+      editingUser = null;
+      saveLocal();
+      toast(editing ? 'Senha alterada com sucesso' : 'Usuário criado');
+      render(true);
+    } catch (error) {
+      console.error('Erro ao salvar usuário:', error);
+      toast('Falha ao comunicar com o servidor');
+    }
+  },
+  async removeUser(user) {
+    if (!confirm(`Remover o usuário ${user.user}?`)) return;
+    try {
+      const response = await fetch('/api/users', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` }, body: JSON.stringify({ action: 'delete', user: user.user, role: user.role }) });
+      const result = await response.json();
+      if (!response.ok) return toast(result.error || 'Não foi possível remover o usuário');
+      S.users = result.users || [];
+      saveLocal();
+      render(true);
+    } catch (error) { console.error(error); toast('Falha ao comunicar com o servidor'); }
+  },
+  cancelUserEdit() { editingUser = null; render(true); },
+  addYellowCard(teamNumber, matchId) {
+    const m = S.matches.find(x => mid(x) === matchId);
+    if (!m || m.st !== 'live') return;
+    const involved = [...m.red, ...m.blue].map(String);
+    if (!involved.includes(String(teamNumber))) return toast('Equipe não participa desta partida');
+    m.yellowCards = m.yellowCards || {};
+    m.yellowCards[teamNumber] = (m.yellowCards[teamNumber] || 0) + 1;
     saveLocal();
-    toast('Usuário salvo');
+    toast(`Cartão amarelo aplicado à equipe ${teamNumber}`);
+    render(true);
+  },
+  removeYellowCard(teamNumber, matchId) {
+    const m = S.matches.find(x => mid(x) === matchId);
+    if (!m || !m.yellowCards?.[teamNumber]) return;
+    m.yellowCards[teamNumber]--;
+    if (!m.yellowCards[teamNumber]) delete m.yellowCards[teamNumber];
+    saveLocal();
+    toast(`Cartão removido da equipe ${teamNumber}`);
     render(true);
   },
   async start() {
@@ -695,7 +712,7 @@ const H = {
     const m = cur(curK());
     if (m) {
       left = getMatchDurSec(m);
-      sv(m, { st: 'wait', log: [], rs: 0, bs: 0, cr: 0, cb: 0 });
+      sv(m, { st: 'wait', log: [], rs: 0, bs: 0, cr: 0, cb: 0, yellowCards: {} });
       toast('Partida reiniciada');
     }
   },
@@ -771,8 +788,8 @@ const H = {
     render(true);
   },
   async gen() {
-    const a = pres().map(t => t.n), c = cf();
-    if (a.length < 4) return toast('São necessárias ao menos 4 equipes credenciadas como presentes');
+    const a = S.teams.map(t => t.n), c = cf();
+    if (a.length < 4) return toast('São necessárias ao menos 4 equipes cadastradas');
     await H.clr();
     const sh = x => [...x].sort(() => Math.random() - .5);
     let t = hm(c.ini);
@@ -815,8 +832,8 @@ const H = {
   addT() { H.addm('T'); },
   addQ() { H.addm('Q'); },
   async addm(k) {
-    const a = pres().map(t => t.n);
-    if (a.length < 4) return toast('São necessárias ao menos 4 equipes credenciadas como presentes');
+    const a = S.teams.map(t => t.n);
+    if (a.length < 4) return toast('São necessárias ao menos 4 equipes cadastradas');
     const c = cf(), n = Math.max(0, ...S.matches.filter(m => m.k == k).map(m => m.n)) + 1;
     const last = Math.max(hm(c.ini) - c.step, ...S.matches.map(m => hm(m.time)));
     const mObj = { k, n, durMin: 4, time: fm(last + c.step), red: a.slice(0, 2), blue: a.slice(2, 4), refs: ['', ''], rs: 0, bs: 0, cr: 0, cb: 0, st: 'wait', log: [] };
@@ -856,8 +873,11 @@ document.addEventListener('click', e => {
   else if (x = q('[data-sort]')) { SO = { c: x.dataset.sort, d: SO.c == x.dataset.sort ? -SO.d : 1 }; render(true); }
   else if (x = q('[data-team]')) { flt = x.dataset.team; render(true); }
   else if (x = q('[data-a]')) H[x.dataset.a]?.();
-  else if (x = q('[data-delu]')) { S.users.splice(+x.dataset.delu, 1); saveLocal(); render(true); }
+  else if (x = q('[data-editu]')) { const u = S.users[+x.dataset.editu]; if (u) { editingUser = { user: u.user, role: u.role }; render(true); } }
+  else if (x = q('[data-delu]')) { const u = S.users[+x.dataset.delu]; if (u) H.removeUser(u); }
   else if (x = q('[data-delm]')) removeMatch(x.dataset.delm);
+  else if (x = q('[data-yellow]')) H.addYellowCard(x.dataset.yellow, x.dataset.match);
+  else if (x = q('[data-yellow-remove]')) H.removeYellowCard(x.dataset.yellowRemove, x.dataset.match);
   else if (x = q('[data-e]')) {
     const m = cur(curK());
     if (!m || m.st != 'live') return;
@@ -918,45 +938,6 @@ document.addEventListener('input', e => {
   }
 });
 
-function normalizeServerState(saved) {
-  return {
-    teams: Array.isArray(saved.teams) ? saved.teams : [],
-    matches: Array.isArray(saved.matches) ? saved.matches : [],
-    insp: Array.isArray(saved.insp) ? saved.insp : [],
-    judge: Array.isArray(saved.judge) ? saved.judge : [],
-    cfg: saved.cfg && typeof saved.cfg === 'object' ? saved.cfg : {},
-    aw: saved.aw && typeof saved.aw === 'object' ? saved.aw : {},
-    users: Array.isArray(saved.users) ? saved.users : []
-  };
-}
-
-async function syncFromServer() {
-  // Não substitui alterações locais ainda não enviadas nem interrompe formulários em edição.
-  if (!apiReady || pendingWrites > 0 || syncInFlight || document.visibilityState === 'hidden') return;
-  const active = document.activeElement;
-  if (active?.closest?.('.frm') || active?.matches?.('[data-f]')) return;
-
-  syncInFlight = true;
-  try {
-    const response = await fetch(`${API_STATE_URL}?since=${encodeURIComponent(lastServerUpdatedAt || '')}`, {
-      cache: 'no-store'
-    });
-    if (response.status === 304) return; // Nenhuma alteração desde a última consulta.
-    if (!response.ok) throw new Error(`Falha ao atualizar dados (${response.status})`);
-    const result = await response.json();
-    if (!result.state || !result.updatedAt || result.updatedAt === lastServerUpdatedAt) return;
-
-    S = normalizeServerState(result.state);
-    lastServerUpdatedAt = result.updatedAt;
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(S)); } catch (_) {}
-    render(true);
-  } catch (error) {
-    console.error('Não foi possível atualizar os dados do servidor:', error);
-  } finally {
-    syncInFlight = false;
-  }
-}
-
 async function startApp() {
   try {
     const response = await fetch(API_STATE_URL);
@@ -964,14 +945,20 @@ async function startApp() {
     const result = await response.json();
 
     if (result.state && typeof result.state === 'object') {
-      S = normalizeServerState(result.state);
-      lastServerUpdatedAt = result.updatedAt || null;
+      const saved = result.state;
+      S = {
+        teams: Array.isArray(saved.teams) ? saved.teams : [],
+        matches: Array.isArray(saved.matches) ? saved.matches : [],
+        insp: Array.isArray(saved.insp) ? saved.insp : [],
+        judge: Array.isArray(saved.judge) ? saved.judge : [],
+        cfg: saved.cfg && typeof saved.cfg === 'object' ? saved.cfg : {},
+        aw: saved.aw && typeof saved.aw === 'object' ? saved.aw : {},
+        users: Array.isArray(saved.users) ? saved.users : []
+      };
       try { localStorage.setItem(STORAGE_KEY, JSON.stringify(S)); } catch (_) {}
     } else {
-      // Primeira execução: importa os dados locais existentes para o banco.
+      // Banco ainda vazio: mantém os dados locais em memória até o primeiro login autorizado.
       apiReady = true;
-      saveLocal();
-      await saveQueue;
     }
     apiReady = true;
   } catch (error) {
@@ -980,7 +967,6 @@ async function startApp() {
     toast('Banco indisponível. O site está usando os dados locais deste navegador.');
   }
   render(true);
-  if (!syncTimer) syncTimer = setInterval(syncFromServer, 2000);
 }
 
 startApp();

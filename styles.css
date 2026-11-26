@@ -338,3 +338,82 @@ td.m a { color: #000; text-decoration: none; cursor: default; }
 .login-box { max-width: 440px; margin: 18px auto; }
 .login-box label { display: block; margin-bottom: 10px; font-weight: 500; }
 .login-box input, .login-box select { width: 100%; margin-top: 4px; }
+/* Penalidades individuais e lista de usuários */
+.penalty-team {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 0;
+  border-bottom: 1px solid rgba(0, 0, 0, .16);
+}
+.penalty-team small { display: block; color: #514848; font-size: 12px; }
+.bt.yellow { background: #e4b900; color: #211b00; font-weight: 700; }
+.user-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid rgba(0, 0, 0, .15);
+}
+.user-row:last-child { border-bottom: 0; }
+.user-row small { display: block; color: #514848; }
+
+/* Ajustes de layout para celulares e telas estreitas */
+@media (max-width: 700px) {
+  body { font-size: 14px; }
+  .top { padding: 9px 12px; text-align: center; }
+  .bar { padding: 12px 14px; text-align: center; }
+  .hero { flex-direction: column; gap: 8px; padding: 22px 12px 14px; text-align: center; }
+  .hero h1 { font-size: clamp(27px, 8vw, 42px); line-height: 1.05; }
+  .hydra-logo { width: min(58vw, 210px); }
+  .tick { font-size: clamp(21px, 6vw, 32px); }
+  .tiles { padding: 12px 0; }
+  .tl { flex-basis: 125px; height: 165px; }
+  .cta { padding: 24px 14px; }
+  .pill { max-width: 100%; padding: 11px 24px; }
+  .evw, .stf { width: 100%; padding: 10px; }
+  .volt { margin-bottom: 8px; }
+  .panel { min-height: 0; padding: 12px 9px 16px; }
+  .evh { flex-direction: column; }
+  .evh h2 { font-size: clamp(27px, 8vw, 38px); }
+  .inf { min-width: 0; width: 100%; }
+  .evb { flex-direction: column; }
+  .loc { min-width: 0; }
+  .nv { flex: 1 1 auto; width: 100%; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .nv button { min-height: 42px; }
+  .staff-head { align-items: stretch; }
+  .staff-head .greeting { font-size: 23px; }
+  .tabs { flex-wrap: nowrap; overflow-x: auto; padding: 2px 0 8px; scrollbar-width: thin; }
+  .tabs button { flex: 0 0 auto; white-space: nowrap; min-height: 40px; }
+  .cd { padding: 11px; border-radius: 9px; overflow-x: auto; }
+  .cd .row { align-items: stretch; }
+  .row > input, .row > select { flex: 1 1 100%; width: 100%; min-width: 0; min-height: 42px; }
+  .row > .bt { min-height: 42px; }
+  .g { grid-template-columns: minmax(0, 1fr); }
+  .team-picker { width: 100%; min-width: 0; }
+  .team-picker select { min-width: 0; }
+  .cd table { min-width: 620px; }
+  .ft { overflow-x: auto; }
+  .ft table { min-width: 560px; }
+  .avg-strip { flex-direction: column; }
+  .avg-box { flex-basis: auto; }
+  .big { font-size: clamp(38px, 12vw, 52px); }
+  .penalty-team { align-items: stretch; flex-direction: column; }
+  .penalty-team .row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .penalty-team .bt { padding: 9px 7px; }
+  .user-row { align-items: stretch; flex-direction: column; }
+  .user-row .row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .user-row .bt { padding: 9px 7px; }
+  .login-box { margin: 10px auto; }
+  footer { gap: 12px; padding: 12px; }
+  .foot-right, .flinks { gap: 10px; justify-content: center; }
+  footer small { max-width: none; text-align: center; }
+}
+
+@media (max-width: 380px) {
+  .penalty-team .row, .user-row .row { grid-template-columns: 1fr; }
+  .nv { grid-template-columns: 1fr; }
+  .rw { gap: 8px; font-size: 11px; }
+}
