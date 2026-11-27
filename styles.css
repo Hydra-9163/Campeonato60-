@@ -417,3 +417,34 @@ td.m a { color: #000; text-decoration: none; cursor: default; }
   .nv { grid-template-columns: 1fr; }
   .rw { gap: 8px; font-size: 11px; }
 }
+
+
+/* Reservas livres para partidas de teste */
+.test-reservations { margin-top: 18px; }
+.test-reservations-heading h3 { margin: 0 0 5px; color: #fff; font-family: var(--f-display); }
+.test-reservations-heading p { margin: 0 0 12px; color: #e8dede; }
+.test-booking-form .g { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+.test-booking-form label { display: block; font-weight: 650; }
+.test-booking-form input, .test-booking-form select { width: 100%; min-height: 42px; margin-top: 5px; }
+.test-booking-form .bt { min-height: 42px; }
+.test-reservation-list { display: grid; gap: 9px; }
+.test-reservation-card { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; justify-content: space-between; padding: 12px; border: 1px solid #aaa; border-radius: 12px; background: #e2dfdf; color: #171313; }
+.test-reservation-main { display: grid; gap: 3px; min-width: 180px; flex: 1 1 220px; }
+.test-reservation-main strong { color: #3b0908; }
+.test-reservation-main span { font-weight: 650; }
+.test-reservation-main small { color: #514747; }
+.test-reservation-status { display: inline-flex; align-items: center; padding: 5px 10px; border-radius: 999px; background: #eee; color: #282020 !important; font-size: 12px; font-weight: 750; }
+.test-reservation-status.status-in_use { background: #fff0c2; color: #684300 !important; }
+.test-reservation-status.status-done { background: #d8f0dc; color: #175b25 !important; }
+.test-reservation-status.status-cancelled { background: #f3d6d6; color: #7c1717 !important; }
+.test-reservation-actions { flex: 1 1 100%; }
+.test-reservation-actions .bt { min-height: 38px; }
+@media (max-width: 640px) {
+  .test-booking-form { padding: 12px; }
+  .test-booking-form .g { grid-template-columns: 1fr; }
+  .test-booking-form .bt { width: 100%; min-height: 46px; }
+  .test-reservation-card { align-items: flex-start; }
+  .test-reservation-status { margin-left: auto; }
+  .test-reservation-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; }
+  .test-reservation-actions .bt { width: 100%; padding: 9px 8px; }
+}

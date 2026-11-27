@@ -25,6 +25,7 @@ function loadLocal() {
       return {
         teams: Array.isArray(p.teams) ? p.teams : [],
         matches: Array.isArray(p.matches) ? p.matches : [],
+        testReservations: Array.isArray(p.testReservations) ? p.testReservations : [],
         insp: Array.isArray(p.insp) ? p.insp : [],
         judge: Array.isArray(p.judge) ? p.judge : [],
         cfg: p.cfg && typeof p.cfg === 'object' ? p.cfg : {},
@@ -33,7 +34,7 @@ function loadLocal() {
       };
     }
   } catch (_) {}
-  return { teams: [], matches: [], insp: [], judge: [], cfg: {}, aw: {}, users: [] };
+  return { teams: [], matches: [], testReservations: [], insp: [], judge: [], cfg: {}, aw: {}, users: [] };
 }
 
 let S = loadLocal();
@@ -41,22 +42,26 @@ let pg = 'home', sub = 'equipes', role = '', tab = '';
 let db = null, U = { uid: 'local-staff', displayName: 'Organização Hydra' };
 let me = { id: 'local-staff', name: '' };
 let W = true, E = true, flt = '', SO = { c: 'n', d: 1 }, sel = '', selM = { T: '', Q: '' };
-let T = null, left = 240, jt = null;
+let T = null, left = 240, jt = null, reservationRefreshTimer = null;
 
-function saveLocal() {
+function cacheLocalOnly() {
   const snapshot = {
-    teams: S.teams, matches: S.matches, insp: S.insp,
+    teams: S.teams, matches: S.matches, testReservations: S.testReservations || [], insp: S.insp,
     judge: S.judge, cfg: S.cfg, aw: S.aw, users: (S.users || []).map(({ user, role }) => ({ user, role }))
   };
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot)); } catch (_) {}
+  return snapshot;
+}
 
+function saveLocal() {
   // Mantém uma cópia local como contingência, mas o Railway é a fonte principal.
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshot));
-  } catch (_) {}
-
+  const snapshot = cacheLocalOnly();
   if (!apiReady) return;
 
-  const body = JSON.stringify(snapshot);
+  const remoteSnapshot = { ...snapshot };
+  // Reservas são gravadas em tabela própria para evitar sobrescritas entre equipes.
+  delete remoteSnapshot.testReservations;
+  const body = JSON.stringify(remoteSnapshot);
   saveQueue = saveQueue
     .catch(() => {})
     .then(async () => {
@@ -321,7 +326,7 @@ const V = {
     const c = cf(), b = (k, l) => `<button class="${sub == k ? 'on' : ''}" data-sub="${k}">${l}</button>`;
     const body = sub == 'equipes'
       ? S.teams.sort((a, b) => a.n - b.n).map(t => `<div class="rw"><span>${esc(t.name)}</span><span>${t.unit ? 'Unidade ' + esc(t.unit) : ''}</span></div>`).join('') || '<p style="padding:10px">Nenhuma equipe cadastrada.</p>'
-      : sub == 'teste' ? mt('T') : sub == 'quali' ? mt('Q') : `<div style="padding:8px 4px" class="g">${awp()}</div>`;
+      : sub == 'teste' ? testReservationsView(false) : sub == 'quali' ? mt('Q') : `<div style="padding:8px 4px" class="g">${awp()}</div>`;
     return ch(`<div class="evw"><div class="volt"><button class="pill sm" data-go="home">VOLTAR</button></div><div class="panel"><div class="evh"><h2>${esc(c.nome)}</h2><div class="inf">Horário do Evento - ${esc(c.ini.replace(':00', 'h'))} às ${esc(c.fim.replace(':00', 'h'))}<br>Data do Evento - ${esc(c.data)}<br>Capacidade do Evento - ${c.max} equipes</div></div><div class="evb"><div class="loc">${esc(c.local || 'Localização completa do evento')}</div><div class="nv">${b('teste', 'Partidas de Teste')}${b('premios', 'Prêmios')}${b('quali', 'Partidas de Qualificação')}${b('equipes', 'Equipes')}</div></div>${body}</div></div>`);
   },
   placar() {
@@ -485,6 +490,61 @@ function judgeEvalView(mode) {
     </div>`;
 }
 
+function localDateValue() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function sortedTestReservations() {
+  return [...(S.testReservations || [])].sort((a, b) =>
+    `${a.date || ''}T${a.time || ''}`.localeCompare(`${b.date || ''}T${b.time || ''}`)
+  );
+}
+
+function reservationStatusLabel(status) {
+  return status === 'in_use' ? 'Em uso' : status === 'done' ? 'Finalizada' : status === 'cancelled' ? 'Cancelada' : 'Reservada';
+}
+
+function testReservationsView(admin = false) {
+  const teams = [...S.teams].sort((a, b) => String(a.n).localeCompare(String(b.n), 'pt-BR', { numeric: true }));
+  const reservations = sortedTestReservations().filter(r => admin || r.status !== 'cancelled');
+  const form = teams.length ? `
+    <div class="cd frm test-booking-form">
+      <h3>Reservar horário para teste</h3>
+      <p>Escolha a equipe, a data e o horário de chegada. A reserva não tem duração fixa: a equipe poderá testar enquanto precisar. Não há limite de equipes nem de reservas simultâneas.</p>
+      <div class="g">
+        <label>Equipe<br><select id="testResTeam">${opts(teams.map(t => [t.n, `${t.n} · ${t.name}`]), teams[0].n)}</select></label>
+        <label>Data<br><input id="testResDate" type="date" value="${localDateValue()}" required></label>
+        <label>Horário de chegada<br><input id="testResTime" type="time" value="09:00" required></label>
+        <label>Observações (opcional)<br><input id="testResNote" type="text" maxlength="240" placeholder="Ex.: teste de autonomia"></label>
+      </div>
+      <p class="mu" style="font-size:12px">A reserva registra somente a chegada, sem horário obrigatório de término. Duas ou mais equipes podem reservar o mesmo horário.</p>
+      <button class="bt" data-a="bookTest">Confirmar reserva</button>
+    </div>` : '<div class="cd"><p>Não há equipes cadastradas para reservar. A organização precisa cadastrar as equipes primeiro.</p></div>';
+  const list = reservations.length ? reservations.map(r => {
+    const team = tm(r.team);
+    return `<article class="test-reservation-card">
+      <div class="test-reservation-main">
+        <strong>${esc(r.team)} · ${esc(team?.name || r.teamName || 'Equipe')}</strong>
+        <span>${esc(String(r.date || '').split('-').reverse().join('/'))} às ${esc(r.time)}</span>
+        ${r.note ? `<small>${esc(r.note)}</small>` : ''}
+      </div>
+      <span class="test-reservation-status status-${esc(r.status || 'reserved')}">${reservationStatusLabel(r.status)}</span>
+      ${admin ? `<div class="row test-reservation-actions">
+        ${r.status !== 'in_use' && r.status !== 'done' && r.status !== 'cancelled' ? `<button class="bt" data-res-status="${esc(r.id)}|in_use">Iniciar uso</button>` : ''}
+        ${r.status === 'in_use' ? `<button class="bt" data-res-status="${esc(r.id)}|done">Finalizar</button>` : ''}
+        ${r.status !== 'cancelled' && r.status !== 'done' ? `<button class="bt gr" data-res-status="${esc(r.id)}|cancelled">Cancelar</button>` : ''}
+        <button class="bt gr" data-delres="${esc(r.id)}">Excluir</button>
+      </div>` : ''}
+    </article>`;
+  }).join('') : '<p class="mu">Ainda não há reservas de teste.</p>';
+  return `<section class="test-reservations">
+    <div class="test-reservations-heading"><div><h3>Reservas para partidas de teste</h3><p>Agendamento livre, sem duração fixa e sem limite de reservas no mesmo horário.</p></div></div>
+    ${form}
+    <div class="cd"><h3>${admin ? 'Gerenciar reservas' : 'Horários reservados'}</h3><div class="test-reservation-list">${list}</div></div>
+  </section>`;
+}
+
 const P = {
   usuarios() {
     const roleOpts = Object.entries(RO).map(([k, v]) => [k, v[0]]);
@@ -497,7 +557,7 @@ const P = {
   },
   mesaT: () => mesa('T'),
   mesaQ: () => mesa('Q'),
-  teste: () => `<div style="color:#000">${mt('T')}</div>`,
+  teste: () => testReservationsView(false),
   quali: () => `<div style="color:#000">${mt('Q')}</div>`,
   placarS: () => rt(rank(), role === 'imagem'),
   premios() {
@@ -534,8 +594,8 @@ const P = {
       const curRef = Array.isArray(m.refs) ? (m.refs[idx] || '') : (idx === 0 ? (m.ref || '') : '');
       return `<td><select data-rf="${m.k}${pad(m.n)}|${idx}"><option value="">–</option>${opts(ar.map(x => [x, x]), curRef)}</select>`;
     };
-    return `${wn()}<div class="row"><button class="bt" data-a="gen">Gerar cronograma aleatório</button><button class="bt gr" data-a="flow">Recalcular horários</button><button class="bt gr" data-a="addT">+ Partida de treino</button><button class="bt gr" data-a="addQ">+ Partida de qualificação</button><button class="bt gr" data-a="clr">Apagar partidas</button></div><div class="cd frm" style="overflow-x:auto"><table><tr><th>Partida<th>Horário<th>Vermelho 1<th>Vermelho 2<th>Azul 1<th>Azul 2<th>Árbitro 1<th>Árbitro 2<th>Excluir` +
-      ms.map(m => `<tr><td>${m.k == 'T' ? 'Treino' : 'Qualif.'} ${m.n}<td><input type="time" data-tm="${m.k}${pad(m.n)}" value="${esc(m.time)}">${sl(m, 'red', 0)}${sl(m, 'red', 1)}${sl(m, 'blue', 0)}${sl(m, 'blue', 1)}${refSel(m, 0)}${refSel(m, 1)}<td><button class="bt gr" data-delm="${m.k}${pad(m.n)}">Excluir</button>`).join('') + '</table></div>';
+    return `${wn()}<div class="row"><button class="bt" data-a="gen">Gerar cronograma de qualificações</button><button class="bt gr" data-a="flow">Recalcular horários</button><button class="bt gr" data-a="addQ">+ Partida de qualificação</button><button class="bt gr" data-a="clr">Apagar partidas</button></div><div class="cd frm" style="overflow-x:auto"><table><tr><th>Partida<th>Horário<th>Vermelho 1<th>Vermelho 2<th>Azul 1<th>Azul 2<th>Árbitro 1<th>Árbitro 2<th>Excluir` +
+      ms.map(m => `<tr><td>${m.k == 'T' ? 'Treino' : 'Qualif.'} ${m.n}<td><input type="time" data-tm="${m.k}${pad(m.n)}" value="${esc(m.time)}">${sl(m, 'red', 0)}${sl(m, 'red', 1)}${sl(m, 'blue', 0)}${sl(m, 'blue', 1)}${refSel(m, 0)}${refSel(m, 1)}<td><button class="bt gr" data-delm="${m.k}${pad(m.n)}">Excluir</button>`).join('') + '</table></div>' + testReservationsView(true);
   },
   inspecao() {
     const a = pres();
@@ -787,15 +847,79 @@ const H = {
     toast('Equipes carregadas (aguardando credenciamento)');
     render(true);
   },
+  async bookTest() {
+    const teamNo = ($('#testResTeam')?.value || '').trim();
+    const date = ($('#testResDate')?.value || '').trim();
+    const time = ($('#testResTime')?.value || '').trim();
+    const note = ($('#testResNote')?.value || '').trim();
+    const team = tm(teamNo);
+    if (!team) return toast('Selecione uma equipe cadastrada');
+    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return toast('Informe uma data válida');
+    if (!time || !/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) return toast('Informe um horário válido');
+    const rec = {
+      id: `tr-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      team: team.n, teamName: team.name, date, time, note,
+      status: 'reserved', createdAt: new Date().toISOString()
+    };
+    try {
+      const response = await fetch('/api/test-reservations', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(rec)
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || `Erro ${response.status}`);
+      S.testReservations = S.testReservations || [];
+      S.testReservations.push(result.reservation || rec);
+      cacheLocalOnly();
+      toast('Reserva de teste confirmada');
+      render(true);
+    } catch (error) {
+      console.error('Falha ao criar reserva:', error);
+      toast('Não foi possível reservar. Tente novamente.');
+    }
+  },
+  async setTestReservationStatus(id, status) {
+    try {
+      const response = await fetch(`/api/test-reservations/${encodeURIComponent(id)}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+        body: JSON.stringify({ status })
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || `Erro ${response.status}`);
+      const idx = (S.testReservations || []).findIndex(r => r.id === id);
+      if (idx >= 0) S.testReservations[idx] = result.reservation;
+      cacheLocalOnly();
+      toast(`Reserva ${reservationStatusLabel(status).toLowerCase()}`);
+      render(true);
+    } catch (error) {
+      console.error('Falha ao atualizar reserva:', error);
+      toast('Não foi possível atualizar a reserva.');
+    }
+  },
+  async deleteTestReservation(id) {
+    try {
+      const response = await fetch(`/api/test-reservations/${encodeURIComponent(id)}`, {
+        method: 'DELETE', headers: { Authorization: `Bearer ${authToken}` }
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || `Erro ${response.status}`);
+      S.testReservations = (S.testReservations || []).filter(r => r.id !== id);
+      cacheLocalOnly();
+      toast('Reserva excluída');
+      render(true);
+    } catch (error) {
+      console.error('Falha ao excluir reserva:', error);
+      toast('Não foi possível excluir a reserva.');
+    }
+  },
   async gen() {
     const a = S.teams.map(t => t.n), c = cf();
     if (a.length < 4) return toast('São necessárias ao menos 4 equipes cadastradas');
     await H.clr();
     const sh = x => [...x].sort(() => Math.random() - .5);
     let t = hm(c.ini);
-    for (const k of ['T', 'Q']) {
+    for (const k of ['Q']) {
       let n = 0;
-      for (let r = 0; r < (k == 'T' ? 1 : 3); r++) {
+      for (let r = 0; r < 3; r++) {
         const s = sh(a), rem = s.length % 4;
         if (rem) {
           const x = s.slice(-rem);
@@ -810,17 +934,15 @@ const H = {
           t += c.step;
         }
       }
-      t += c.gap;
     }
     saveLocal();
-    toast('Cronograma gerado');
+    toast('Cronograma de qualificações gerado');
     render(true);
   },
   async flow() {
     const c = cf();
-    let t = hm(c.ini), k = 'T';
-    for (const m of [...S.matches].sort((a, b) => a.k < b.k ? 1 : a.k > b.k ? -1 : a.n - b.n)) {
-      if (m.k != k) { k = m.k; t += c.gap; }
+    let t = hm(c.ini);
+    for (const m of [...S.matches].filter(x => x.k === 'Q').sort((a, b) => a.n - b.n)) {
       m.time = fm(t);
       if (db) await col('matches').doc(mid(m)).update({ time: m.time });
       t += c.step;
@@ -876,6 +998,8 @@ document.addEventListener('click', e => {
   else if (x = q('[data-editu]')) { const u = S.users[+x.dataset.editu]; if (u) { editingUser = { user: u.user, role: u.role }; render(true); } }
   else if (x = q('[data-delu]')) { const u = S.users[+x.dataset.delu]; if (u) H.removeUser(u); }
   else if (x = q('[data-delm]')) removeMatch(x.dataset.delm);
+  else if (x = q('[data-res-status]')) { const [id, status] = x.dataset.resStatus.split('|'); H.setTestReservationStatus(id, status); }
+  else if (x = q('[data-delres]')) H.deleteTestReservation(x.dataset.delres);
   else if (x = q('[data-yellow]')) H.addYellowCard(x.dataset.yellow, x.dataset.match);
   else if (x = q('[data-yellow-remove]')) H.removeYellowCard(x.dataset.yellowRemove, x.dataset.match);
   else if (x = q('[data-e]')) {
@@ -938,6 +1062,27 @@ document.addEventListener('input', e => {
   }
 });
 
+async function refreshTestReservations() {
+  const relevantView = (pg === 'evento' && sub === 'teste') || (pg === 'portal' && (tab === 'teste' || tab === 'cronograma'));
+  if (!relevantView || document.hidden) return;
+  try {
+    const response = await fetch('/api/test-reservations', { cache: 'no-store' });
+    if (!response.ok) return;
+    const result = await response.json();
+    const next = Array.isArray(result.reservations) ? result.reservations : [];
+    if (JSON.stringify(next) === JSON.stringify(S.testReservations || [])) return;
+    S.testReservations = next;
+    try {
+      const local = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+      local.testReservations = next;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(local));
+    } catch (_) {}
+    if (!document.activeElement?.closest?.('.frm')) render(true);
+  } catch (error) {
+    console.warn('Não foi possível atualizar reservas automaticamente:', error);
+  }
+}
+
 async function startApp() {
   try {
     const response = await fetch(API_STATE_URL);
@@ -949,6 +1094,7 @@ async function startApp() {
       S = {
         teams: Array.isArray(saved.teams) ? saved.teams : [],
         matches: Array.isArray(saved.matches) ? saved.matches : [],
+        testReservations: Array.isArray(saved.testReservations) ? saved.testReservations : [],
         insp: Array.isArray(saved.insp) ? saved.insp : [],
         judge: Array.isArray(saved.judge) ? saved.judge : [],
         cfg: saved.cfg && typeof saved.cfg === 'object' ? saved.cfg : {},
@@ -969,4 +1115,7 @@ async function startApp() {
   render(true);
 }
 
-startApp();
+startApp().then(() => {
+  if (reservationRefreshTimer) clearInterval(reservationRefreshTimer);
+  reservationRefreshTimer = setInterval(refreshTestReservations, 5000);
+});

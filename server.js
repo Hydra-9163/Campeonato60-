@@ -59,6 +59,19 @@ async function writeStoredState(state) {
   );
 }
 
+
+async function readTestReservations() {
+  const result = await pool.query(`
+    SELECT id, team, team_name AS "teamName",
+           TO_CHAR(reservation_date, 'YYYY-MM-DD') AS date,
+           TO_CHAR(start_time, 'HH24:MI') AS time,
+           note, status, created_at AS "createdAt", updated_at AS "updatedAt"
+    FROM test_reservations
+    ORDER BY reservation_date, start_time, created_at
+  `);
+  return result.rows;
+}
+
 async function migrateLegacyPasswords() {
   const state = await readStoredState();
   if (!state || !Array.isArray(state.users)) return;
@@ -91,6 +104,20 @@ async function ensureDatabase() {
     CREATE TABLE IF NOT EXISTS campeonato_state (
       id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
       state JSONB NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS test_reservations (
+      id TEXT PRIMARY KEY,
+      team TEXT NOT NULL,
+      team_name TEXT NOT NULL DEFAULT '',
+      reservation_date DATE NOT NULL,
+      start_time TIME NOT NULL,
+      note TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'reserved'
+        CHECK (status IN ('reserved', 'in_use', 'done', 'cancelled')),
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
@@ -154,14 +181,88 @@ app.post('/api/logout', requireAuth, (req, res) => {
 
 app.get('/api/state', async (_req, res) => {
   try {
-    const result = await pool.query(
-      'SELECT state, updated_at FROM campeonato_state WHERE id = 1'
-    );
-    if (!result.rowCount) return res.json({ state: null });
-    res.json({ state: publicState(result.rows[0].state), updatedAt: result.rows[0].updated_at });
+    const result = await pool.query('SELECT state, updated_at FROM campeonato_state WHERE id = 1');
+    const state = result.rowCount ? publicState(result.rows[0].state) : {
+      teams: [], matches: [], insp: [], judge: [], cfg: {}, aw: {}, users: []
+    };
+    state.testReservations = await readTestReservations();
+    res.json({ state, updatedAt: result.rowCount ? result.rows[0].updated_at : null });
   } catch (error) {
     console.error('Erro ao carregar estado:', error);
     res.status(500).json({ error: 'Não foi possível carregar os dados.' });
+  }
+});
+
+app.get('/api/test-reservations', async (_req, res) => {
+  try {
+    res.json({ reservations: await readTestReservations() });
+  } catch (error) {
+    console.error('Erro ao listar reservas de teste:', error);
+    res.status(500).json({ error: 'Não foi possível carregar as reservas.' });
+  }
+});
+
+// Criação pública: as equipes conseguem reservar sem precisar acessar o portal interno.
+// Horários sobrepostos são permitidos e não há duração máxima configurada.
+app.post('/api/test-reservations', async (req, res) => {
+  const { id, team, teamName = '', date, time, note = '' } = req.body || {};
+  if (!id || !team || !/^\d{4}-\d{2}-\d{2}$/.test(String(date || '')) ||
+      !/^([01]\d|2[0-3]):[0-5]\d$/.test(String(time || ''))) {
+    return res.status(400).json({ error: 'Informe equipe, data e horário válidos.' });
+  }
+  try {
+    const stored = await readStoredState() || {};
+    const registeredTeam = (Array.isArray(stored.teams) ? stored.teams : [])
+      .find(item => String(item.n) === String(team));
+    if (!registeredTeam) return res.status(400).json({ error: 'A equipe precisa estar cadastrada antes de reservar.' });
+
+    const result = await pool.query(`
+      INSERT INTO test_reservations (id, team, team_name, reservation_date, start_time, note)
+      VALUES ($1, $2, $3, $4::date, $5::time, $6)
+      RETURNING id, team, team_name AS "teamName",
+                TO_CHAR(reservation_date, 'YYYY-MM-DD') AS date,
+                TO_CHAR(start_time, 'HH24:MI') AS time,
+                note, status, created_at AS "createdAt", updated_at AS "updatedAt"
+    `, [String(id).slice(0, 100), String(team).slice(0, 40), String(registeredTeam.name || teamName).slice(0, 160), date, time, String(note).slice(0, 240)]);
+    res.status(201).json({ ok: true, reservation: result.rows[0] });
+  } catch (error) {
+    console.error('Erro ao criar reserva de teste:', error);
+    res.status(500).json({ error: 'Não foi possível registrar a reserva.' });
+  }
+});
+
+app.patch('/api/test-reservations/:id', requireAuth, async (req, res) => {
+  if (req.auth.role !== 'geral') return res.status(403).json({ error: 'Apenas o Árbitro Chefe pode gerenciar reservas.' });
+  const { status } = req.body || {};
+  if (!['reserved', 'in_use', 'done', 'cancelled'].includes(status)) {
+    return res.status(400).json({ error: 'Status de reserva inválido.' });
+  }
+  try {
+    const result = await pool.query(`
+      UPDATE test_reservations SET status = $2, updated_at = NOW()
+      WHERE id = $1
+      RETURNING id, team, team_name AS "teamName",
+                TO_CHAR(reservation_date, 'YYYY-MM-DD') AS date,
+                TO_CHAR(start_time, 'HH24:MI') AS time,
+                note, status, created_at AS "createdAt", updated_at AS "updatedAt"
+    `, [req.params.id, status]);
+    if (!result.rowCount) return res.status(404).json({ error: 'Reserva não encontrada.' });
+    res.json({ ok: true, reservation: result.rows[0] });
+  } catch (error) {
+    console.error('Erro ao atualizar reserva:', error);
+    res.status(500).json({ error: 'Não foi possível atualizar a reserva.' });
+  }
+});
+
+app.delete('/api/test-reservations/:id', requireAuth, async (req, res) => {
+  if (req.auth.role !== 'geral') return res.status(403).json({ error: 'Apenas o Árbitro Chefe pode excluir reservas.' });
+  try {
+    const result = await pool.query('DELETE FROM test_reservations WHERE id = $1', [req.params.id]);
+    if (!result.rowCount) return res.status(404).json({ error: 'Reserva não encontrada.' });
+    res.json({ ok: true });
+  } catch (error) {
+    console.error('Erro ao excluir reserva:', error);
+    res.status(500).json({ error: 'Não foi possível excluir a reserva.' });
   }
 });
 
@@ -205,7 +306,7 @@ app.put('/api/state', requireAuth, async (req, res) => {
     return res.status(400).json({ error: 'Corpo da requisição inválido.' });
   }
 
-  const arrayKeys = ['teams', 'matches', 'insp', 'judge', 'users'];
+  const arrayKeys = ['teams', 'matches', 'testReservations', 'insp', 'judge', 'users'];
   for (const key of arrayKeys) {
     if (incoming[key] !== undefined && !Array.isArray(incoming[key])) {
       return res.status(400).json({ error: `O campo ${key} deve ser uma lista.` });
@@ -224,7 +325,8 @@ app.put('/api/state', requireAuth, async (req, res) => {
       }
       return { user: user.user, role: user.role };
     });
-    const state = { ...incoming, users: secureUsers };
+    const { testReservations: _ignoredReservations, ...mainState } = incoming;
+    const state = { ...mainState, users: secureUsers };
     await writeStoredState(state);
     res.json({ ok: true });
   } catch (error) {
