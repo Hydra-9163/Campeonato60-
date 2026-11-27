@@ -448,3 +448,9 @@ td.m a { color: #000; text-decoration: none; cursor: default; }
   .test-reservation-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; }
   .test-reservation-actions .bt { width: 100%; padding: 9px 8px; }
 }
+
+/* Placar individual e temporário das partidas de treino */
+.training-score-team { text-align: center; min-width: 0; }
+.training-score-team .big { font-size: clamp(42px, 7vw, 64px); line-height: 1.1; margin: 12px 0 4px; }
+.training-score-team .row { gap: 8px; }
+.training-score-team .bt { flex: 1 1 130px; }

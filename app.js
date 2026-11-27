@@ -43,6 +43,7 @@ let db = null, U = { uid: 'local-staff', displayName: 'Organização Hydra' };
 let me = { id: 'local-staff', name: '' };
 let W = true, E = true, flt = '', SO = { c: 'n', d: 1 }, sel = '', selM = { T: '', Q: '' };
 let T = null, left = 240, jt = null, reservationRefreshTimer = null;
+let trainingMatches = [], selectedTrainingMatch = '', trainingScores = {}; // placares de treino existem apenas na memória desta sessão
 
 function cacheLocalOnly() {
   const snapshot = {
@@ -112,7 +113,7 @@ const TORCIDA_CRITERIA = [
 ];
 
 const RO = {
-  arbT: ['Árbitro de treino', ['mesaT', 'teste']],
+  arbT: ['Árbitro de treino', ['teste']],
   arbQ: ['Árbitro de qualificação', ['mesaQ', 'quali']],
   inspetor: ['Inspetor', ['inspecao']],
   juizDesign: ['Juiz de Design', ['avDesign']],
@@ -326,7 +327,7 @@ const V = {
     const c = cf(), b = (k, l) => `<button class="${sub == k ? 'on' : ''}" data-sub="${k}">${l}</button>`;
     const body = sub == 'equipes'
       ? S.teams.sort((a, b) => a.n - b.n).map(t => `<div class="rw"><span>${esc(t.name)}</span><span>${t.unit ? 'Unidade ' + esc(t.unit) : ''}</span></div>`).join('') || '<p style="padding:10px">Nenhuma equipe cadastrada.</p>'
-      : sub == 'teste' ? testReservationsView(false) : sub == 'quali' ? mt('Q') : `<div style="padding:8px 4px" class="g">${awp()}</div>`;
+      : sub == 'teste' ? trainingMatchesView(false) : sub == 'quali' ? mt('Q') : `<div style="padding:8px 4px" class="g">${awp()}</div>`;
     return ch(`<div class="evw"><div class="volt"><button class="pill sm" data-go="home">VOLTAR</button></div><div class="panel"><div class="evh"><h2>${esc(c.nome)}</h2><div class="inf">Horário do Evento - ${esc(c.ini.replace(':00', 'h'))} às ${esc(c.fim.replace(':00', 'h'))}<br>Data do Evento - ${esc(c.data)}<br>Capacidade do Evento - ${c.max} equipes</div></div><div class="evb"><div class="loc">${esc(c.local || 'Localização completa do evento')}</div><div class="nv">${b('teste', 'Partidas de Teste')}${b('premios', 'Prêmios')}${b('quali', 'Partidas de Qualificação')}${b('equipes', 'Equipes')}</div></div>${body}</div></div>`);
   },
   placar() {
@@ -490,59 +491,53 @@ function judgeEvalView(mode) {
     </div>`;
 }
 
-function localDateValue() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+function trainingStatusLabel(status) {
+  return status === 'in_progress' ? 'Em andamento' : status === 'done' ? 'Finalizada' : 'Reservada';
 }
 
-function sortedTestReservations() {
-  return [...(S.testReservations || [])].sort((a, b) =>
-    `${a.date || ''}T${a.time || ''}`.localeCompare(`${b.date || ''}T${b.time || ''}`)
-  );
-}
-
-function reservationStatusLabel(status) {
-  return status === 'in_use' ? 'Em uso' : status === 'done' ? 'Finalizada' : status === 'cancelled' ? 'Cancelada' : 'Reservada';
-}
-
-function testReservationsView(admin = false) {
-  const teams = [...S.teams].sort((a, b) => String(a.n).localeCompare(String(b.n), 'pt-BR', { numeric: true }));
-  const reservations = sortedTestReservations().filter(r => admin || r.status !== 'cancelled');
-  const form = teams.length ? `
-    <div class="cd frm test-booking-form">
-      <h3>Reservar horário para teste</h3>
-      <p>Escolha a equipe, a data e o horário de chegada. A reserva não tem duração fixa: a equipe poderá testar enquanto precisar. Não há limite de equipes nem de reservas simultâneas.</p>
+function trainingMatchesView(staff = false) {
+  const matches = [...trainingMatches].sort((a, b) => String(a.time).localeCompare(String(b.time)) || String(a.createdAt).localeCompare(String(b.createdAt)));
+  const teamOptions = [...S.teams].sort((a, b) => String(a.n).localeCompare(String(b.n), 'pt-BR', { numeric: true }));
+  const form = staff && role === 'arbT' ? (teamOptions.length ? `
+    <div class="cd frm"><h3>Reservar partida de treino</h3>
+      <p>O árbitro de treino escolhe uma ou duas equipes e o horário. Todas as partidas acontecem no dia 3. Não há limite de partidas simultâneas nem duração fixa.</p>
       <div class="g">
-        <label>Equipe<br><select id="testResTeam">${opts(teams.map(t => [t.n, `${t.n} · ${t.name}`]), teams[0].n)}</select></label>
-        <label>Data<br><input id="testResDate" type="date" value="${localDateValue()}" required></label>
-        <label>Horário de chegada<br><input id="testResTime" type="time" value="09:00" required></label>
-        <label>Observações (opcional)<br><input id="testResNote" type="text" maxlength="240" placeholder="Ex.: teste de autonomia"></label>
+        <label>Equipe 1<br><select id="trainTeam1">${opts(teamOptions.map(t => [t.n, `${t.n} · ${t.name}`]), teamOptions[0].n)}</select></label>
+        <label>Equipe 2 (opcional)<br><select id="trainTeam2"><option value="">Sem segunda equipe</option>${opts(teamOptions.map(t => [t.n, `${t.n} · ${t.name}`]), '')}</select></label>
+        <label>Horário<br><input id="trainTime" type="time" value="09:00" required></label>
+        <label>Observação (opcional)<br><input id="trainNote" maxlength="240" placeholder="Ex.: teste de autonomia"></label>
       </div>
-      <p class="mu" style="font-size:12px">A reserva registra somente a chegada, sem horário obrigatório de término. Duas ou mais equipes podem reservar o mesmo horário.</p>
-      <button class="bt" data-a="bookTest">Confirmar reserva</button>
-    </div>` : '<div class="cd"><p>Não há equipes cadastradas para reservar. A organização precisa cadastrar as equipes primeiro.</p></div>';
-  const list = reservations.length ? reservations.map(r => {
-    const team = tm(r.team);
-    return `<article class="test-reservation-card">
-      <div class="test-reservation-main">
-        <strong>${esc(r.team)} · ${esc(team?.name || r.teamName || 'Equipe')}</strong>
-        <span>${esc(String(r.date || '').split('-').reverse().join('/'))} às ${esc(r.time)}</span>
-        ${r.note ? `<small>${esc(r.note)}</small>` : ''}
-      </div>
-      <span class="test-reservation-status status-${esc(r.status || 'reserved')}">${reservationStatusLabel(r.status)}</span>
-      ${admin ? `<div class="row test-reservation-actions">
-        ${r.status !== 'in_use' && r.status !== 'done' && r.status !== 'cancelled' ? `<button class="bt" data-res-status="${esc(r.id)}|in_use">Iniciar uso</button>` : ''}
-        ${r.status === 'in_use' ? `<button class="bt" data-res-status="${esc(r.id)}|done">Finalizar</button>` : ''}
-        ${r.status !== 'cancelled' && r.status !== 'done' ? `<button class="bt gr" data-res-status="${esc(r.id)}|cancelled">Cancelar</button>` : ''}
-        <button class="bt gr" data-delres="${esc(r.id)}">Excluir</button>
-      </div>` : ''}
-    </article>`;
-  }).join('') : '<p class="mu">Ainda não há reservas de teste.</p>';
-  return `<section class="test-reservations">
-    <div class="test-reservations-heading"><div><h3>Reservas para partidas de teste</h3><p>Agendamento livre, sem duração fixa e sem limite de reservas no mesmo horário.</p></div></div>
-    ${form}
-    <div class="cd"><h3>${admin ? 'Gerenciar reservas' : 'Horários reservados'}</h3><div class="test-reservation-list">${list}</div></div>
-  </section>`;
+      <button class="bt" data-a="createTrainingMatch">Reservar partida</button>
+    </div>` : '<div class="cd"><p>Cadastre as equipes antes de reservar uma partida.</p></div>') : '';
+
+  const selected = matches.find(m => m.id === selectedTrainingMatch);
+  const scoreView = staff && selected ? (() => {
+    const score = trainingScores[selected.id] || (trainingScores[selected.id] = {});
+    const teams = (selected.teams || []).map(String);
+    const rows = teams.map(n => {
+      const team = tm(n), points = score[n]?.points || 0;
+      return `<div class="cd training-score-team"><h3>${esc(n)} · ${esc(team?.name || 'Equipe')}</h3>
+        <div class="big">${points}</div><p class="mu">Pontuação individual desta equipe (temporária)</p>
+        <div class="row" style="justify-content:center;flex-wrap:wrap">
+          <button class="bt" data-tscore="${esc(n)}|3">+3 Marcou ponto</button>
+          <button class="bt gr" data-tscore="${esc(n)}|-3">−3 Colisão</button>
+          <button class="bt gr" data-tscore="${esc(n)}|-12">−12 Imobilização</button>
+          <button class="bt gr" data-tundo="${esc(n)}">Desfazer</button>
+        </div></div>`;
+    }).join('');
+    return `<div class="cd"><div class="row" style="justify-content:space-between"><h3 style="margin:0">Placar da partida · ${esc(selected.time)} · Dia 3</h3><button class="bt gr" data-a="closeTrainingScore">Fechar placar</button></div>
+      <p class="mu">Cada equipe tem seu próprio placar. Os pontos não são enviados, salvos no banco ou contabilizados no ranking oficial.</p><div class="g">${rows}</div>
+      <div class="row"><button class="bt" data-tstatus="${esc(selected.id)}|in_progress" ${selected.status === 'in_progress' ? 'disabled' : ''}>Iniciar partida</button><button class="bt gr" data-tstatus="${esc(selected.id)}|done" ${selected.status === 'done' ? 'disabled' : ''}>Finalizar partida</button></div>
+    </div>`;
+  })() : '';
+
+  const list = matches.length ? matches.map(m => {
+    const names = (m.teams || []).map(n => `${esc(n)} · ${esc(tm(n)?.name || 'Equipe')}`).join(' + ');
+    const mine = m.createdBy ? ` · Árbitro: ${esc(m.createdBy)}` : '';
+    return `<article class="test-reservation-card"><div class="test-reservation-main"><strong>${names}</strong><span>Dia 3 · ${esc(m.time)}</span>${m.note ? `<small>${esc(m.note)}</small>` : ''}<small>${trainingStatusLabel(m.status)}${mine}</small></div>
+      ${staff ? `<div class="row"><button class="bt" data-tmatch="${esc(m.id)}">${selectedTrainingMatch === m.id ? 'Placar aberto' : 'Abrir placar'}</button>${role === 'arbT' || role === 'geral' ? `<button class="bt gr" data-tdel="${esc(m.id)}">Excluir</button>` : ''}</div>` : `<span class="test-reservation-status">${trainingStatusLabel(m.status)}</span>`}</article>`;
+  }).join('') : '<p class="mu">Ainda não há partidas de treino reservadas.</p>';
+  return `<section class="test-reservations"><div class="test-reservations-heading"><div><h3>Partidas de teste · Dia 3</h3><p>Uma ou duas equipes por partida. Horários simultâneos são permitidos.</p></div></div>${form}${scoreView}<div class="cd"><h3>${staff ? 'Partidas reservadas' : 'Programação de partidas de teste'}</h3><div class="test-reservation-list">${list}</div></div></section>`;
 }
 
 const P = {
@@ -557,7 +552,7 @@ const P = {
   },
   mesaT: () => mesa('T'),
   mesaQ: () => mesa('Q'),
-  teste: () => testReservationsView(false),
+  teste: () => trainingMatchesView(true),
   quali: () => `<div style="color:#000">${mt('Q')}</div>`,
   placarS: () => rt(rank(), role === 'imagem'),
   premios() {
@@ -595,7 +590,7 @@ const P = {
       return `<td><select data-rf="${m.k}${pad(m.n)}|${idx}"><option value="">–</option>${opts(ar.map(x => [x, x]), curRef)}</select>`;
     };
     return `${wn()}<div class="row"><button class="bt" data-a="gen">Gerar cronograma de qualificações</button><button class="bt gr" data-a="flow">Recalcular horários</button><button class="bt gr" data-a="addQ">+ Partida de qualificação</button><button class="bt gr" data-a="clr">Apagar partidas</button></div><div class="cd frm" style="overflow-x:auto"><table><tr><th>Partida<th>Horário<th>Vermelho 1<th>Vermelho 2<th>Azul 1<th>Azul 2<th>Árbitro 1<th>Árbitro 2<th>Excluir` +
-      ms.map(m => `<tr><td>${m.k == 'T' ? 'Treino' : 'Qualif.'} ${m.n}<td><input type="time" data-tm="${m.k}${pad(m.n)}" value="${esc(m.time)}">${sl(m, 'red', 0)}${sl(m, 'red', 1)}${sl(m, 'blue', 0)}${sl(m, 'blue', 1)}${refSel(m, 0)}${refSel(m, 1)}<td><button class="bt gr" data-delm="${m.k}${pad(m.n)}">Excluir</button>`).join('') + '</table></div>' + testReservationsView(true);
+      ms.map(m => `<tr><td>${m.k == 'T' ? 'Treino' : 'Qualif.'} ${m.n}<td><input type="time" data-tm="${m.k}${pad(m.n)}" value="${esc(m.time)}">${sl(m, 'red', 0)}${sl(m, 'red', 1)}${sl(m, 'blue', 0)}${sl(m, 'blue', 1)}${refSel(m, 0)}${refSel(m, 1)}<td><button class="bt gr" data-delm="${m.k}${pad(m.n)}">Excluir</button>`).join('') + '</table></div>' + trainingMatchesView(true);
   },
   inspecao() {
     const a = pres();
@@ -847,70 +842,66 @@ const H = {
     toast('Equipes carregadas (aguardando credenciamento)');
     render(true);
   },
-  async bookTest() {
-    const teamNo = ($('#testResTeam')?.value || '').trim();
-    const date = ($('#testResDate')?.value || '').trim();
-    const time = ($('#testResTime')?.value || '').trim();
-    const note = ($('#testResNote')?.value || '').trim();
-    const team = tm(teamNo);
-    if (!team) return toast('Selecione uma equipe cadastrada');
-    if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return toast('Informe uma data válida');
-    if (!time || !/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) return toast('Informe um horário válido');
-    const rec = {
-      id: `tr-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      team: team.n, teamName: team.name, date, time, note,
-      status: 'reserved', createdAt: new Date().toISOString()
-    };
+  async createTrainingMatch() {
+    if (role !== 'arbT' && role !== 'geral') return toast('Somente árbitros de treino podem reservar partidas.');
+    const first = ($('#trainTeam1')?.value || '').trim();
+    const second = ($('#trainTeam2')?.value || '').trim();
+    const time = ($('#trainTime')?.value || '').trim();
+    const note = ($('#trainNote')?.value || '').trim();
+    const teams = [first, second].filter(Boolean);
+    if (!teams.length || teams.length > 2 || new Set(teams).size !== teams.length) return toast('Escolha uma ou duas equipes diferentes.');
+    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) return toast('Informe um horário válido.');
+    const rec = { id: `treino-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, teams, time, note };
     try {
-      const response = await fetch('/api/test-reservations', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(rec)
-      });
+      const response = await fetch('/api/training-matches', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` }, body: JSON.stringify(rec) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || `Erro ${response.status}`);
-      S.testReservations = S.testReservations || [];
-      S.testReservations.push(result.reservation || rec);
-      cacheLocalOnly();
-      toast('Reserva de teste confirmada');
+      trainingMatches.push(result.match);
+      selectedTrainingMatch = result.match.id;
+      trainingScores[selectedTrainingMatch] = {};
+      toast('Partida de treino reservada');
       render(true);
-    } catch (error) {
-      console.error('Falha ao criar reserva:', error);
-      toast('Não foi possível reservar. Tente novamente.');
-    }
+    } catch (error) { console.error(error); toast(error.message || 'Não foi possível reservar a partida.'); }
   },
-  async setTestReservationStatus(id, status) {
+  async setTrainingStatus(id, status) {
     try {
-      const response = await fetch(`/api/test-reservations/${encodeURIComponent(id)}`, {
-        method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
-        body: JSON.stringify({ status })
-      });
+      const response = await fetch(`/api/training-matches/${encodeURIComponent(id)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` }, body: JSON.stringify({ status }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || `Erro ${response.status}`);
-      const idx = (S.testReservations || []).findIndex(r => r.id === id);
-      if (idx >= 0) S.testReservations[idx] = result.reservation;
-      cacheLocalOnly();
-      toast(`Reserva ${reservationStatusLabel(status).toLowerCase()}`);
+      const idx = trainingMatches.findIndex(m => m.id === id);
+      if (idx >= 0) trainingMatches[idx] = result.match;
+      toast(status === 'done' ? 'Partida finalizada' : 'Partida iniciada');
       render(true);
-    } catch (error) {
-      console.error('Falha ao atualizar reserva:', error);
-      toast('Não foi possível atualizar a reserva.');
-    }
+    } catch (error) { toast(error.message || 'Não foi possível atualizar a partida.'); }
   },
-  async deleteTestReservation(id) {
+  async deleteTrainingMatch(id) {
+    if (!confirm('Excluir esta partida de treino?')) return;
     try {
-      const response = await fetch(`/api/test-reservations/${encodeURIComponent(id)}`, {
-        method: 'DELETE', headers: { Authorization: `Bearer ${authToken}` }
-      });
+      const response = await fetch(`/api/training-matches/${encodeURIComponent(id)}`, { method: 'DELETE', headers: { Authorization: `Bearer ${authToken}` } });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || `Erro ${response.status}`);
-      S.testReservations = (S.testReservations || []).filter(r => r.id !== id);
-      cacheLocalOnly();
-      toast('Reserva excluída');
+      trainingMatches = trainingMatches.filter(m => m.id !== id);
+      delete trainingScores[id];
+      if (selectedTrainingMatch === id) selectedTrainingMatch = '';
       render(true);
-    } catch (error) {
-      console.error('Falha ao excluir reserva:', error);
-      toast('Não foi possível excluir a reserva.');
-    }
+    } catch (error) { toast(error.message || 'Não foi possível excluir a partida.'); }
   },
+  addTrainingPoints(team, delta) {
+    const m = trainingMatches.find(x => x.id === selectedTrainingMatch);
+    if (!m || !(m.teams || []).map(String).includes(String(team))) return;
+    const score = trainingScores[m.id] || (trainingScores[m.id] = {});
+    const item = score[team] || (score[team] = { points: 0, log: [] });
+    item.log.push(delta);
+    item.points += delta;
+    render(true);
+  },
+  undoTrainingPoints(team) {
+    const item = trainingScores[selectedTrainingMatch]?.[team];
+    if (!item?.log?.length) return;
+    item.points -= item.log.pop();
+    render(true);
+  },
+  closeTrainingScore() { selectedTrainingMatch = ''; render(true); },
   async gen() {
     const a = S.teams.map(t => t.n), c = cf();
     if (a.length < 4) return toast('São necessárias ao menos 4 equipes cadastradas');
@@ -998,6 +989,11 @@ document.addEventListener('click', e => {
   else if (x = q('[data-editu]')) { const u = S.users[+x.dataset.editu]; if (u) { editingUser = { user: u.user, role: u.role }; render(true); } }
   else if (x = q('[data-delu]')) { const u = S.users[+x.dataset.delu]; if (u) H.removeUser(u); }
   else if (x = q('[data-delm]')) removeMatch(x.dataset.delm);
+  else if (x = q('[data-tmatch]')) { selectedTrainingMatch = x.dataset.tmatch; render(true); }
+  else if (x = q('[data-tscore]')) { const [team, delta] = x.dataset.tscore.split('|'); H.addTrainingPoints(team, Number(delta)); }
+  else if (x = q('[data-tundo]')) H.undoTrainingPoints(x.dataset.tundo);
+  else if (x = q('[data-tstatus]')) { const [id, status] = x.dataset.tstatus.split('|'); H.setTrainingStatus(id, status); }
+  else if (x = q('[data-tdel]')) H.deleteTrainingMatch(x.dataset.tdel);
   else if (x = q('[data-res-status]')) { const [id, status] = x.dataset.resStatus.split('|'); H.setTestReservationStatus(id, status); }
   else if (x = q('[data-delres]')) H.deleteTestReservation(x.dataset.delres);
   else if (x = q('[data-yellow]')) H.addYellowCard(x.dataset.yellow, x.dataset.match);
@@ -1066,17 +1062,12 @@ async function refreshTestReservations() {
   const relevantView = (pg === 'evento' && sub === 'teste') || (pg === 'portal' && (tab === 'teste' || tab === 'cronograma'));
   if (!relevantView || document.hidden) return;
   try {
-    const response = await fetch('/api/test-reservations', { cache: 'no-store' });
+    const response = await fetch('/api/training-matches', { cache: 'no-store' });
     if (!response.ok) return;
     const result = await response.json();
-    const next = Array.isArray(result.reservations) ? result.reservations : [];
-    if (JSON.stringify(next) === JSON.stringify(S.testReservations || [])) return;
-    S.testReservations = next;
-    try {
-      const local = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
-      local.testReservations = next;
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(local));
-    } catch (_) {}
+    const next = Array.isArray(result.matches) ? result.matches : [];
+    if (JSON.stringify(next) === JSON.stringify(trainingMatches)) return;
+    trainingMatches = next;
     if (!document.activeElement?.closest?.('.frm')) render(true);
   } catch (error) {
     console.warn('Não foi possível atualizar reservas automaticamente:', error);

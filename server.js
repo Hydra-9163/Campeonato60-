@@ -108,6 +108,18 @@ async function ensureDatabase() {
     )
   `);
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS training_matches (
+      id TEXT PRIMARY KEY,
+      teams JSONB NOT NULL,
+      start_time TIME NOT NULL,
+      note TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'reserved' CHECK (status IN ('reserved', 'in_progress', 'done')),
+      created_by TEXT NOT NULL DEFAULT '',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS test_reservations (
       id TEXT PRIMARY KEY,
       team TEXT NOT NULL,
@@ -193,76 +205,68 @@ app.get('/api/state', async (_req, res) => {
   }
 });
 
-app.get('/api/test-reservations', async (_req, res) => {
+app.get('/api/training-matches', async (_req, res) => {
   try {
-    res.json({ reservations: await readTestReservations() });
+    const result = await pool.query(`
+      SELECT id, teams, TO_CHAR(start_time, 'HH24:MI') AS time,
+             note, status, created_by AS "createdBy", created_at AS "createdAt"
+      FROM training_matches ORDER BY start_time, created_at
+    `);
+    res.json({ matches: result.rows });
   } catch (error) {
-    console.error('Erro ao listar reservas de teste:', error);
-    res.status(500).json({ error: 'Não foi possível carregar as reservas.' });
+    console.error('Erro ao listar partidas de treino:', error);
+    res.status(500).json({ error: 'Não foi possível carregar as partidas de treino.' });
   }
 });
 
-// Criação pública: as equipes conseguem reservar sem precisar acessar o portal interno.
-// Horários sobrepostos são permitidos e não há duração máxima configurada.
-app.post('/api/test-reservations', async (req, res) => {
-  const { id, team, teamName = '', date, time, note = '' } = req.body || {};
-  if (!id || !team || !/^\d{4}-\d{2}-\d{2}$/.test(String(date || '')) ||
-      !/^([01]\d|2[0-3]):[0-5]\d$/.test(String(time || ''))) {
-    return res.status(400).json({ error: 'Informe equipe, data e horário válidos.' });
+app.post('/api/training-matches', requireAuth, async (req, res) => {
+  if (req.auth.role !== 'arbT') return res.status(403).json({ error: 'Apenas árbitros de treino podem reservar partidas.' });
+  const { id, teams, time, note = '' } = req.body || {};
+  if (!id || !Array.isArray(teams) || teams.length < 1 || teams.length > 2 || new Set(teams.map(String)).size !== teams.length || !/^([01]\d|2[0-3]):[0-5]\d$/.test(String(time || ''))) {
+    return res.status(400).json({ error: 'Selecione uma ou duas equipes e informe um horário válido.' });
   }
   try {
     const stored = await readStoredState() || {};
-    const registeredTeam = (Array.isArray(stored.teams) ? stored.teams : [])
-      .find(item => String(item.n) === String(team));
-    if (!registeredTeam) return res.status(400).json({ error: 'A equipe precisa estar cadastrada antes de reservar.' });
-
+    const registered = new Set((stored.teams || []).map(t => String(t.n)));
+    if (teams.some(t => !registered.has(String(t)))) return res.status(400).json({ error: 'Todas as equipes precisam estar cadastradas.' });
     const result = await pool.query(`
-      INSERT INTO test_reservations (id, team, team_name, reservation_date, start_time, note)
-      VALUES ($1, $2, $3, $4::date, $5::time, $6)
-      RETURNING id, team, team_name AS "teamName",
-                TO_CHAR(reservation_date, 'YYYY-MM-DD') AS date,
-                TO_CHAR(start_time, 'HH24:MI') AS time,
-                note, status, created_at AS "createdAt", updated_at AS "updatedAt"
-    `, [String(id).slice(0, 100), String(team).slice(0, 40), String(registeredTeam.name || teamName).slice(0, 160), date, time, String(note).slice(0, 240)]);
-    res.status(201).json({ ok: true, reservation: result.rows[0] });
+      INSERT INTO training_matches (id, teams, start_time, note, created_by)
+      VALUES ($1, $2::jsonb, $3::time, $4, $5)
+      RETURNING id, teams, TO_CHAR(start_time, 'HH24:MI') AS time, note, status, created_by AS "createdBy", created_at AS "createdAt"
+    `, [String(id).slice(0, 100), JSON.stringify(teams.map(String)), time, String(note).slice(0, 240), req.auth.user || 'Árbitro de treino']);
+    res.status(201).json({ ok: true, match: result.rows[0] });
   } catch (error) {
-    console.error('Erro ao criar reserva de teste:', error);
-    res.status(500).json({ error: 'Não foi possível registrar a reserva.' });
+    console.error('Erro ao reservar partida de treino:', error);
+    res.status(500).json({ error: 'Não foi possível reservar a partida.' });
   }
 });
 
-app.patch('/api/test-reservations/:id', requireAuth, async (req, res) => {
-  if (req.auth.role !== 'geral') return res.status(403).json({ error: 'Apenas o Árbitro Chefe pode gerenciar reservas.' });
+app.patch('/api/training-matches/:id', requireAuth, async (req, res) => {
+  if (!['arbT', 'geral'].includes(req.auth.role)) return res.status(403).json({ error: 'Apenas árbitros de treino podem atualizar partidas.' });
   const { status } = req.body || {};
-  if (!['reserved', 'in_use', 'done', 'cancelled'].includes(status)) {
-    return res.status(400).json({ error: 'Status de reserva inválido.' });
-  }
+  if (!['reserved', 'in_progress', 'done'].includes(status)) return res.status(400).json({ error: 'Status inválido.' });
   try {
     const result = await pool.query(`
-      UPDATE test_reservations SET status = $2, updated_at = NOW()
-      WHERE id = $1
-      RETURNING id, team, team_name AS "teamName",
-                TO_CHAR(reservation_date, 'YYYY-MM-DD') AS date,
-                TO_CHAR(start_time, 'HH24:MI') AS time,
-                note, status, created_at AS "createdAt", updated_at AS "updatedAt"
+      UPDATE training_matches SET status = $2, updated_at = NOW() WHERE id = $1
+      RETURNING id, teams, TO_CHAR(start_time, 'HH24:MI') AS time, note, status, created_by AS "createdBy", created_at AS "createdAt"
     `, [req.params.id, status]);
-    if (!result.rowCount) return res.status(404).json({ error: 'Reserva não encontrada.' });
-    res.json({ ok: true, reservation: result.rows[0] });
+    if (!result.rowCount) return res.status(404).json({ error: 'Partida não encontrada.' });
+    res.json({ ok: true, match: result.rows[0] });
   } catch (error) {
-    console.error('Erro ao atualizar reserva:', error);
-    res.status(500).json({ error: 'Não foi possível atualizar a reserva.' });
+    console.error('Erro ao atualizar partida de treino:', error);
+    res.status(500).json({ error: 'Não foi possível atualizar a partida.' });
   }
 });
 
-app.delete('/api/test-reservations/:id', requireAuth, async (req, res) => {
-  if (req.auth.role !== 'geral') return res.status(403).json({ error: 'Apenas o Árbitro Chefe pode excluir reservas.' });
+app.delete('/api/training-matches/:id', requireAuth, async (req, res) => {
+  if (!['arbT', 'geral'].includes(req.auth.role)) return res.status(403).json({ error: 'Apenas árbitros de treino podem excluir partidas.' });
   try {
-    const result = await pool.query('DELETE FROM test_reservations WHERE id = $1', [req.params.id]);
-    if (!result.rowCount) return res.status(404).json({ error: 'Reserva não encontrada.' });
+    const result = await pool.query('DELETE FROM training_matches WHERE id = $1', [req.params.id]);
+    if (!result.rowCount) return res.status(404).json({ error: 'Partida não encontrada.' });
     res.json({ ok: true });
   } catch (error) {
-    console.error('Erro ao excluir reserva:', error);
-    res.status(500).json({ error: 'Não foi possível excluir a reserva.' });
+    console.error('Erro ao excluir partida de treino:', error);
+    res.status(500).json({ error: 'Não foi possível excluir a partida.' });
   }
 });
 
